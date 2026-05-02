@@ -1,0 +1,20 @@
+{
+  "categories": [
+    {
+      "id": "easylist",
+      "url": "https://easylist.to/easylist/easylist.txt"
+    },
+    {
+      "id": "easyprivacy",
+      "url": "https://easylist.to/easylist/easyprivacy.txt"
+    },
+    {
+      "id": "easylist-cookies",
+      "url": "https://secure.fanboy.co.nz/fanboy-cookiemonster.txt"
+    },
+    {
+      "id": "easylist-annoyances",
+      "url": "https://secure.fanboy.co.nz/fanboy-annoyance.txt"
+    }
+  ]
+}

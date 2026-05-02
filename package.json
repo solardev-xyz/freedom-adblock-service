@@ -1,0 +1,19 @@
+{
+  "name": "freedom-adblock-service",
+  "version": "0.1.0",
+  "description": "Builds Safari/WebKit content-blocker JSON for Freedom Browser iOS from EasyList-family filter lists.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsx bin/build.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "adblock-rs": "0.12.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
