@@ -29,6 +29,9 @@ function fakeClient(initial: FeedManifest | null = null) {
     async writeManifest(payload) {
       latest = JSON.parse(payload) as FeedManifest;
     },
+    async batchTtlSeconds() {
+      return 30 * 24 * 60 * 60;
+    },
   };
   return { client, uploads, get latest() { return latest; } };
 }
@@ -85,12 +88,17 @@ async function fixture() {
   return { outDir, manifest };
 }
 
+// The fixture lists are intentionally tiny, so the sanity guard is disabled for
+// tests that exercise upload/version/sig mechanics (guard has its own tests).
+const NO_GUARD = { guard: false } as const;
+
 test('publish uploads blobs, fills refs, versions from 1, and signs verifiably', async () => {
   const { outDir, manifest } = await fixture();
   const fake = fakeClient(null);
 
-  const published = await publish(manifest, outDir, fake.client, SIGNER);
+  const { manifest: published, changed } = await publish(manifest, outDir, fake.client, SIGNER, NO_GUARD);
 
+  assert.equal(changed, true, 'first publish writes the feed');
   assert.equal(published.version, 1, 'empty feed -> version 1');
   assert.equal(fake.uploads.length, 2, 'uploaded both blobs');
   assert.ok(published.platforms.desktop.lists[0].ref.startsWith('ref-'), 'desktop ref filled');
@@ -103,27 +111,65 @@ test('publish uploads blobs, fills refs, versions from 1, and signs verifiably',
   await rm(outDir, { recursive: true, force: true });
 });
 
-test('publish reuses refs for unchanged blobs and bumps the version', async () => {
+test('publish skips the write when content is unchanged (no version churn)', async () => {
   const { outDir, manifest } = await fixture();
-  const first = await publish(manifest, outDir, fakeClient(null).client, SIGNER);
+  const first = (await publish(manifest, outDir, fakeClient(null).client, SIGNER, NO_GUARD)).manifest;
 
-  // Second publish against a feed that already has `first`.
+  // Second publish against a feed that already has `first` and identical lists.
   const fake = fakeClient(first);
-  const second = await publish(manifest, outDir, fake.client, SIGNER);
+  const second = await publish(manifest, outDir, fake.client, SIGNER, NO_GUARD);
 
-  assert.equal(second.version, first.version + 1, 'version bumped');
+  assert.equal(second.changed, false, 'unchanged content -> no write');
+  assert.equal(second.manifest.version, first.version, 'version not bumped');
   assert.equal(fake.uploads.length, 0, 'nothing re-uploaded (same hashes)');
-  assert.equal(second.platforms.desktop.lists[0].ref, first.platforms.desktop.lists[0].ref);
+});
 
-  await rm(outDir, { recursive: true, force: true });
+test('forceRepublish bumps the version even when content is unchanged', async () => {
+  const { outDir, manifest } = await fixture();
+  const first = (await publish(manifest, outDir, fakeClient(null).client, SIGNER, NO_GUARD)).manifest;
+
+  const fake = fakeClient(first);
+  const second = await publish(manifest, outDir, fake.client, SIGNER, { guard: false, forceRepublish: true });
+
+  assert.equal(second.changed, true, 'forced -> write');
+  assert.equal(second.manifest.version, first.version + 1, 'version bumped');
+  assert.equal(fake.uploads.length, 0, 'still nothing re-uploaded (same hashes)');
 });
 
 test('publish rejects a blob whose bytes do not match the manifest sha256', async () => {
   const { outDir, manifest } = await fixture();
   manifest.platforms.desktop.lists[0].sha256 = 'deadbeef'; // wrong hash
   await assert.rejects(
-    () => publish(manifest, outDir, fakeClient(null).client, SIGNER),
+    () => publish(manifest, outDir, fakeClient(null).client, SIGNER, NO_GUARD),
     /sha256 mismatch/,
+  );
+  await rm(outDir, { recursive: true, force: true });
+});
+
+test('guard rejects an implausibly small list (broken upstream fetch)', async () => {
+  const { outDir, manifest } = await fixture(); // 15-byte desktop list, 1 rule
+  await assert.rejects(
+    () => publish(manifest, outDir, fakeClient(null).client, SIGNER),
+    /guard: desktop:easylist too small/,
+  );
+  await rm(outDir, { recursive: true, force: true });
+});
+
+test('guard rejects a list that shrank sharply versus the live feed', async () => {
+  const { outDir, manifest } = await fixture();
+  // Live feed says easylist was 100k bytes / 10k rules; the new build is tiny.
+  const previous: FeedManifest = JSON.parse(JSON.stringify(manifest));
+  previous.version = 5;
+  previous.platforms.desktop.lists[0].bytes = 100_000;
+  previous.platforms.desktop.lists[0].rule_count = 10_000;
+  previous.platforms.ios.lists[0].shards[0].bytes = 100_000;
+  previous.platforms.ios.lists[0].shards[0].rule_count = 10_000;
+
+  await assert.rejects(
+    () => publish(manifest, outDir, fakeClient(previous).client, SIGNER, {
+      guard: { minBytes: 1, minRuleCount: 1, maxShrinkRatio: 0.5 },
+    }),
+    /shrank/,
   );
   await rm(outDir, { recursive: true, force: true });
 });

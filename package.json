@@ -8,6 +8,7 @@
     "build": "tsx bin/build.ts",
     "typecheck": "tsc --noEmit",
     "publish:swarm": "tsx bin/publish.ts",
+    "serve:swarm": "tsx bin/serve.ts",
     "test": "tsx --test test/**/*.test.ts"
   },
   "dependencies": {

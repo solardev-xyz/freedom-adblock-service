@@ -4,37 +4,28 @@ import { fileURLToPath } from 'node:url';
 
 import { publish } from '../src/publish.ts';
 import { createSwarmClient } from '../src/swarm.ts';
-import { signerAddress } from '../src/sign.ts';
+import { readSwarmEnv, printSwarmBanner } from '../src/swarm-env.ts';
 import { FEED_TOPIC, type FeedManifest } from '../src/manifest.ts';
 
 // Publish the freshly-built out/feed-manifest.json to the Swarm feed.
 // Run `npm run build` first. Requires a funded local Ant/Bee node.
-//
-//   FEED_SIGNER_KEY   0x-prefixed hex — feed owner + manifest signer (required)
-//   BEE_API_URL       default http://127.0.0.1:1633
-//   STAMP_BATCH_ID    optional; auto-selects the batch with most TTL otherwise
+// Env (see src/swarm-env.ts): FEED_SIGNER_KEY (required), BEE_API_URL, STAMP_BATCH_ID.
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const outDir = join(repoRoot, 'out');
 
-const signerKey = process.env.FEED_SIGNER_KEY;
-if (!signerKey) {
-  throw new Error('FEED_SIGNER_KEY is required (0x-prefixed hex private key).');
-}
-const beeUrl = process.env.BEE_API_URL ?? 'http://127.0.0.1:1633';
-const batchId = process.env.STAMP_BATCH_ID;
-
-const address = signerAddress(signerKey);
-console.log(`Feed owner / signer address: ${address}`);
-console.log(`Feed topic:                  ${FEED_TOPIC}`);
-console.log(`Bee API:                     ${beeUrl}`);
-console.log('→ Pin these in the clients: FEED_OWNER_ADDRESS and MANIFEST_SIG_ADDRESS.\n');
+const env = readSwarmEnv();
+printSwarmBanner(env);
 
 const manifest = JSON.parse(
   await readFile(join(outDir, 'feed-manifest.json'), 'utf8'),
 ) as FeedManifest;
 
-const client = await createSwarmClient({ beeUrl, signerKey, batchId });
-const published = await publish(manifest, outDir, client, signerKey);
+const client = await createSwarmClient(env);
+const result = await publish(manifest, outDir, client, env.signerKey);
 
-console.log(`\n✓ published version ${published.version} to feed ${FEED_TOPIC} (owner ${address})`);
+if (result.changed) {
+  console.log(`\n✓ published version ${result.manifest.version} to feed ${FEED_TOPIC} (owner ${env.address})`);
+} else {
+  console.log(`\n✓ feed already up to date at version ${result.manifest.version} (nothing to publish)`);
+}

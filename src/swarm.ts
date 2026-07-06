@@ -88,5 +88,14 @@ export async function createSwarmClient(cfg: SwarmConfig): Promise<SwarmClient> 
       const index = await nextIndex();
       await writer.uploadPayload(batchId, payload, { index });
     },
+    async batchTtlSeconds(): Promise<number | null> {
+      try {
+        const batch = await bee.getPostageBatch(batchId);
+        const ttl = batch.duration;
+        return ttl && typeof ttl.toSeconds === 'function' ? ttl.toSeconds() : null;
+      } catch {
+        return null;
+      }
+    },
   };
 }
