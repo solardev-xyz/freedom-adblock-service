@@ -63,8 +63,7 @@ ssh root@5.78.195.10 "docker run --rm --network coolify curlimages/curl:latest \
 
 ### 2. Create the Coolify app
 
-- **Source**: this repo, branch `feature/swarm-publish` (private-repo deploy key
-  as with the other apps).
+- **Source**: this repo (public), branch `main`.
 - **Build pack**: **Dockerfile** (the multi-stage Dockerfile in this repo — the
   builder compiles adblock-rs's native module; the runtime is node + tsx).
 - **Network**: `coolify` (default) — reaches the node as `http://bee:1633`.
