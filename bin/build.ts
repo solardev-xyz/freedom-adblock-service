@@ -88,18 +88,22 @@ for (const { id, url, desktop_category, license } of sources.categories) {
     rule_count: inputRuleCount,
   });
 
-  // ── iOS artifact: WebKit-JSON shards. The uploaded blob per shard is the
-  //    exact shard JSON (no trailing newline); the on-disk bundle file keeps a
-  //    trailing newline for the iOS resource copy, so hash shard.json directly.
+  // ── iOS artifact: WebKit-JSON shards. Hash the exact on-disk bytes
+  //    (shard JSON + trailing newline) so the manifest sha256 == the file ==
+  //    the blob the publisher uploads == what the client downloads and writes.
   const shards = shardRules(mainRules, tailRules);
-  const shardMeta = shards.map((shard, i) => ({
-    shard,
-    filename: shards.length === 1 ? `${id}.json` : `${id}-${i + 1}.json`,
-    sha256: sha256Hex(shard.json),
-  }));
+  const shardMeta = shards.map((shard, i) => {
+    const fileBytes = shard.json + '\n';
+    return {
+      shard,
+      filename: shards.length === 1 ? `${id}.json` : `${id}-${i + 1}.json`,
+      fileBytes,
+      sha256: sha256Hex(fileBytes),
+    };
+  });
 
-  for (const { shard, filename } of shardMeta) {
-    await writeFile(join(outDir, filename), shard.json + '\n', 'utf8');
+  for (const { filename, fileBytes } of shardMeta) {
+    await writeFile(join(outDir, filename), fileBytes, 'utf8');
   }
 
   iosLists.push({
