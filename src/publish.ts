@@ -48,6 +48,14 @@ export interface PublishOptions {
   guard?: GuardThresholds | false;
   /** Write a new feed version even when content is byte-for-byte unchanged. */
   forceRepublish?: boolean;
+  /**
+   * Upload every blob even when the previous manifest already carries its
+   * ref. Content-addressing keeps the refs identical — this re-stamps and
+   * re-pushes the chunks, the recovery move after a batch turned out to be
+   * too shallow (bucket overflow on a mutable batch silently drops chunks)
+   * or otherwise lost data.
+   */
+  uploadAll?: boolean;
 }
 
 export interface PublishResult {
@@ -171,7 +179,7 @@ export async function publish(
   let reused = 0;
   const refFor = async (path: string, sha256: string): Promise<string> => {
     const cached = knownRefs.get(sha256);
-    if (cached) {
+    if (cached && !options.uploadAll) {
       reused++;
       return cached;
     }
