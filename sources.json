@@ -2,19 +2,27 @@
   "categories": [
     {
       "id": "easylist",
-      "url": "https://easylist.to/easylist/easylist.txt"
+      "url": "https://easylist.to/easylist/easylist.txt",
+      "desktop_category": "ads",
+      "license": "GPLv3+ / CC BY-SA 3.0+"
     },
     {
       "id": "easyprivacy",
-      "url": "https://easylist.to/easylist/easyprivacy.txt"
+      "url": "https://easylist.to/easylist/easyprivacy.txt",
+      "desktop_category": "privacy",
+      "license": "GPLv3+ / CC BY-SA 3.0+"
     },
     {
       "id": "easylist-cookies",
-      "url": "https://secure.fanboy.co.nz/fanboy-cookiemonster.txt"
+      "url": "https://secure.fanboy.co.nz/fanboy-cookiemonster.txt",
+      "desktop_category": "cookies",
+      "license": "GPLv3+ / CC BY-SA 3.0+"
     },
     {
       "id": "easylist-annoyances",
-      "url": "https://secure.fanboy.co.nz/fanboy-annoyance.txt"
+      "url": "https://secure.fanboy.co.nz/fanboy-annoyance.txt",
+      "desktop_category": "annoyances",
+      "license": "GPLv3+ / CC BY-SA 3.0+"
     }
   ]
 }
