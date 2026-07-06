@@ -128,11 +128,13 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
 
     iosLists.push({
       list_id: id,
-      shards: shardMeta.map(({ shard, filename, sha256 }) => ({
+      shards: shardMeta.map(({ shard, filename, fileBytes, sha256 }) => ({
         filename,
         ref: '',
         sha256,
-        bytes: shard.byteSize,
+        // Size of the exact on-disk/blob bytes (shard JSON + trailing
+        // newline) — must agree with sha256, which hashes fileBytes.
+        bytes: Buffer.byteLength(fileBytes),
         rule_count: shard.rules.length,
       })),
     });
