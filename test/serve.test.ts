@@ -32,6 +32,8 @@ function fakeManifest(version: number): FeedManifest {
 // be tested without a node or upstream fetches.
 function fakeIO(opts: {
   ttl?: number | null;
+  depth?: number;
+  utilization?: number;
   changed?: boolean;
   publishErr?: Error;
   log?: Logger;
@@ -40,7 +42,15 @@ function fakeIO(opts: {
     async uploadBytes() { return 'ref'; },
     async readLatestManifest() { return null; },
     async writeManifest() {},
-    async batchTtlSeconds() { return 'ttl' in opts ? (opts.ttl ?? null) : 90 * 24 * 60 * 60; },
+    async batchStatus() {
+      if ('ttl' in opts && opts.ttl === null) return null; // query failed
+      return {
+        ttlSeconds: opts.ttl ?? 90 * 24 * 60 * 60,
+        depth: opts.depth ?? 20,
+        bucketDepth: 16,
+        utilization: opts.utilization ?? 1,
+      };
+    },
   };
   return {
     build: async (): Promise<BuildResult> => ({ manifest: fakeManifest(2), outDir: '/tmp/x' }),
@@ -68,10 +78,35 @@ test('runPublishCycle warns when the batch TTL is below the floor', async () => 
   assert.ok(lines.some((l) => l.startsWith('warn') && l.includes('below the')));
 });
 
-test('runPublishCycle warns when the TTL is unknown', async () => {
+test('runPublishCycle warns when the batch status is unknown', async () => {
   const { log, lines } = collectingLogger();
   await runPublishCycle(CONFIG, fakeIO({ ttl: null, log }));
-  assert.ok(lines.some((l) => l.startsWith('warn') && l.includes('TTL unknown')));
+  assert.ok(lines.some((l) => l.startsWith('warn') && l.includes('status unknown')));
+});
+
+test('runPublishCycle warns on a too-shallow batch (silent chunk loss)', async () => {
+  const { log, lines } = collectingLogger();
+  await runPublishCycle(CONFIG, fakeIO({ depth: 17, utilization: 0, log }));
+  assert.ok(
+    lines.some((l) => l.startsWith('warn') && l.includes('below the safe floor')),
+    lines.join('\n'),
+  );
+});
+
+test('runPublishCycle warns when the fullest bucket nears its slot count', async () => {
+  const { log, lines } = collectingLogger();
+  // depth 20 -> 16 slots/bucket; utilization 13 crosses the 16 - 4 threshold.
+  await runPublishCycle(CONFIG, fakeIO({ depth: 20, utilization: 13, log }));
+  assert.ok(
+    lines.some((l) => l.startsWith('warn') && l.includes('nearing overflow')),
+    lines.join('\n'),
+  );
+});
+
+test('runPublishCycle stays quiet on a healthy deep batch', async () => {
+  const { log, lines } = collectingLogger();
+  await runPublishCycle(CONFIG, fakeIO({ depth: 20, utilization: 3, log }));
+  assert.ok(!lines.some((l) => l.startsWith('warn')), lines.join('\n'));
 });
 
 test('runServeLoop runs until aborted and a failing cycle does not stop it', async () => {

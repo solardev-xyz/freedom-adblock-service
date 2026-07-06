@@ -29,8 +29,8 @@ function fakeClient(initial: FeedManifest | null = null) {
     async writeManifest(payload) {
       latest = JSON.parse(payload) as FeedManifest;
     },
-    async batchTtlSeconds() {
-      return 30 * 24 * 60 * 60;
+    async batchStatus() {
+      return { ttlSeconds: 30 * 24 * 60 * 60, depth: 20, bucketDepth: 16, utilization: 1 };
     },
   };
   return { client, uploads, get latest() { return latest; } };

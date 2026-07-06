@@ -50,6 +50,13 @@ export interface CycleResult {
 const DAY_SEC = 24 * 60 * 60;
 
 /**
+ * Minimum postage-batch depth for this workload. Depth 17 (2 slots/bucket)
+ * demonstrably loses chunks on our ~4k-chunk publishes; depth 20 gives 16
+ * slots/bucket, which the birthday math puts comfortably out of reach.
+ */
+export const MIN_SAFE_BATCH_DEPTH = 20;
+
+/**
  * One publish cycle: build → publish-if-changed → report batch TTL. Throws on
  * any failure (bad build, node down, guard trip); the loop catches and retries
  * next tick, so the last-good feed stays live.
@@ -70,16 +77,42 @@ export async function runPublishCycle(config: ServeConfig, io: ServeIO): Promise
     log.info(`[publish] no change; feed stays at version ${result.manifest.version}`);
   }
 
-  const ttl = await io.client.batchTtlSeconds();
-  if (ttl == null) {
-    log.warn('[stamp] batch TTL unknown (query failed) — check the node');
-  } else if (ttl < config.batchTtlFloorSec) {
-    log.warn(
-      `[stamp] batch TTL ${Math.round(ttl / DAY_SEC)}d is below the ` +
-      `${Math.round(config.batchTtlFloorSec / DAY_SEC)}d floor — top it up before it lapses`,
-    );
+  const status = await io.client.batchStatus();
+  if (status == null) {
+    log.warn('[stamp] batch status unknown (query failed) — check the node');
   } else {
-    log.info(`[stamp] batch TTL ${Math.round(ttl / DAY_SEC)}d`);
+    const { ttlSeconds: ttl, depth, bucketDepth, utilization } = status;
+    if (ttl == null) {
+      log.warn('[stamp] batch TTL unknown — check the node');
+    } else if (ttl < config.batchTtlFloorSec) {
+      log.warn(
+        `[stamp] batch TTL ${Math.round(ttl / DAY_SEC)}d is below the ` +
+        `${Math.round(config.batchTtlFloorSec / DAY_SEC)}d floor — top it up before it lapses`,
+      );
+    } else {
+      log.info(`[stamp] batch TTL ${Math.round(ttl / DAY_SEC)}d`);
+    }
+
+    // Bucket-overflow guard. A batch of depth D has 2^(D - bucketDepth) slots
+    // per bucket; on a MUTABLE batch a full bucket silently overwrites its
+    // oldest stamp, deleting previously published chunks from the network
+    // (this bit us at depth 17 = 2 slots). Warn on shallow batches and when
+    // the fullest bucket nears its slot count — the fix is `dilute` (raise
+    // depth) or a new deeper batch + FORCE_REUPLOAD=1.
+    const slotsPerBucket = 2 ** (depth - bucketDepth);
+    if (depth < MIN_SAFE_BATCH_DEPTH) {
+      log.warn(
+        `[stamp] batch depth ${depth} is below the safe floor of ${MIN_SAFE_BATCH_DEPTH} ` +
+        `(only ${slotsPerBucket} slot(s) per bucket) — bulk publishes WILL silently lose ` +
+        `chunks to bucket overflow; move to a deeper batch and republish with FORCE_REUPLOAD=1`,
+      );
+    } else if (utilization >= slotsPerBucket - Math.max(1, Math.floor(slotsPerBucket / 4))) {
+      log.warn(
+        `[stamp] batch utilization ${utilization}/${slotsPerBucket} slots in the fullest ` +
+        `bucket — nearing overflow (silent chunk loss on a mutable batch); dilute or ` +
+        `replace the batch soon`,
+      );
+    }
   }
 
   return {
@@ -87,7 +120,7 @@ export async function runPublishCycle(config: ServeConfig, io: ServeIO): Promise
     version: result.manifest.version,
     uploaded: result.uploaded,
     reused: result.reused,
-    ttlSeconds: ttl,
+    ttlSeconds: status?.ttlSeconds ?? null,
   };
 }
 

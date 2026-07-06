@@ -17,8 +17,23 @@ export interface SwarmClient {
   readLatestManifest(): Promise<FeedManifest | null>;
   /** Append a new manifest payload to the feed. */
   writeManifest(payload: string): Promise<void>;
-  /** Remaining TTL of the postage batch in seconds, or null if unknown. */
-  batchTtlSeconds(): Promise<number | null>;
+  /** Health of the postage batch, or null if the query failed. */
+  batchStatus(): Promise<BatchStatus | null>;
+}
+
+/**
+ * Postage-batch health the daemon monitors. `utilization` is bee's "fullest
+ * bucket" counter: a batch of depth D has 2^bucketDepth buckets of
+ * 2^(D - bucketDepth) slots each, and chunks land in buckets by content hash.
+ * When a bucket is full, a MUTABLE batch silently overwrites its oldest stamp
+ * — previously published chunks vanish from the network with no error. So
+ * utilization must stay clear of the per-bucket slot count.
+ */
+export interface BatchStatus {
+  ttlSeconds: number | null;
+  depth: number;
+  bucketDepth: number;
+  utilization: number;
 }
 
 /**

@@ -41,17 +41,39 @@ same `coolify` network as the `bee` node.
 
 ### 1. Buy a dedicated mutable postage batch on the bee node
 
-The feed is a stream of Single-Owner-Chunk rewrites, so the batch **must be
-mutable** (`Immutable: false`) or its buckets fill and writes start failing —
-the swarmit README learned this the hard way. Buy generously (~1yr):
+Two properties are **load-bearing** — getting either wrong loses data:
+
+**Mutable** (`Immutable: false`): the feed is a stream of Single-Owner-Chunk
+rewrites; an immutable batch's buckets fill and writes start failing (the
+swarmit README learned this the hard way).
+
+**Depth ≥ 20**: a batch of depth D is divided into 2^16 buckets with
+`2^(D-16)` slots each, and every 4KB chunk lands in a bucket by content hash
+— effectively at random. One publish here is ~18MB ≈ 4,500 chunks; at depth
+17 (2 slots/bucket) the birthday math guarantees a few buckets overflow, and
+**on a mutable batch an overflowing bucket silently overwrites its oldest
+stamp** — previously published chunks vanish from the network with no error
+anywhere (we lost 3 of 15 shards this way on 2026-07-06; the batch showed
+`utilization: 2`, i.e. fullest bucket maxed). Depth 20 = 16 slots/bucket,
+comfortably safe for this workload. The daemon warns every cycle if the batch
+is shallower than 20 or its utilization nears the slot count.
 
 ```bash
-# amount ≈ 9.3e8 × days ; depth 17 is ample for a handful of small lists.
-# ~365 days: amount ≈ 3.4e11.
+# cost = amount × 2^depth PLUR (1 xBZZ = 1e16 PLUR); amount ≈ 1.1e9 × days.
+# Depth 20, ~90 days ≈ 10 xBZZ:
 ssh root@5.78.195.10 "docker run --rm --network coolify curlimages/curl:latest \
   -s -X POST -H 'Immutable: false' \
-  'http://bee:1633/stamps/340000000000/17?label=freedom-adblock'"
+  'http://bee:1633/stamps/95000000000/20?label=freedom-adblock'"
 # → { "batchID": "…" }   ← this is STAMP_BATCH_ID
+```
+
+**If a batch ever loses chunks** (blobs truncate mid-download even from the
+origin node): buy a correct batch, `PATCH` `STAMP_BATCH_ID`, redeploy, then
+force a full re-upload — refs stay identical (content-addressed), the chunks
+get re-stamped and re-pushed:
+
+```bash
+docker exec -e FORCE_REUPLOAD=1 <container> npm run publish:swarm
 ```
 
 Confirm it is usable and note the TTL:
