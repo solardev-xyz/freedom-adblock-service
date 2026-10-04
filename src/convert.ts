@@ -46,8 +46,21 @@ export function convert(text: string): ConvertResult {
     tailRules.unshift(converted.pop()!);
   }
   const { rules: mainRules, stats: exceptionStats } = applyCosmeticExceptions(converted, exceptions, entityHidesDropped);
+  for (const rule of [...mainRules, ...tailRules]) canonicalizeTrigger(rule);
 
   return { mainRules, tailRules, listMeta, inputRuleCount, exceptionStats };
+}
+
+/// adblock-rs fills trigger arrays (resource-type, if-domain, …) from Rust
+/// hash sets, so their order changes from run to run. WebKit gives that order
+/// no meaning, but the shard bytes — and so their sha256, Swarm chunks and the
+/// clients' re-downloads — would change on every build even when the lists
+/// didn't. Sorting makes identical input give identical shards.
+function canonicalizeTrigger(rule: ContentBlockingRule): void {
+  const trigger = rule.trigger as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(trigger)) {
+    if (Array.isArray(value)) trigger[key] = [...value].sort();
+  }
 }
 
 /// A catch-all safety rule: `ignore-previous-rules` whose URL filter matches

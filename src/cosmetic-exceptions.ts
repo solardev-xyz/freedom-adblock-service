@@ -27,6 +27,14 @@ import { normalizeHostname } from './scriptlets.ts';
 //   - an exception with nothing to except in its own list is dropped
 //     (cross-list exceptions can't be expressed per WKContentRuleList)
 //
+// Finally, hostnames get WebKit's `*` prefix. adblock-rs writes cosmetic
+// if-/unless-domain entries bare, which WebKit matches against the exact host
+// only — `bild.de##.ad` never reached www.bild.de — while uBlock and desktop
+// apply a hostname to its subdomains too. One case keeps the bare host: a
+// domain hide with an exception on one of its subdomains (`a.com##sel` +
+// `sub.a.com#@#sel`), which a single WebKit trigger can't express; the hide
+// then stays on a.com itself rather than spreading to the excepted subdomain.
+//
 // The same pass removes a second shape adblock-rs gets wrong: a HIDE whose
 // only positive locations are entities, plus negations —
 // `oxy.*,~oxy.edu##[href*=".info"]`. adblock-rs drops the entities it can't
@@ -56,6 +64,10 @@ export interface CosmeticExceptionStats {
   unexpressible: number;
   /** Hides with only entity positives plus negations, dropped before conversion. */
   entity_hides_dropped: number;
+  /** if-/unless-domain entries given the `*` (subdomains too) prefix. */
+  domains_prefixed: number;
+  /** Bare if-domain entries kept exact because a subdomain of them is excepted. */
+  domains_kept_exact: number;
 }
 
 // hostnames, `#@`, optional procedural/style marker, `#`, body.
@@ -123,6 +135,8 @@ export function applyCosmeticExceptions(
     rules_dropped: 0,
     unmatched: 0,
     unexpressible: 0,
+    domains_prefixed: 0,
+    domains_kept_exact: 0,
   };
   const bySelector = new Map<string, ContentBlockingRule[]>();
   for (const rule of rules) {
@@ -135,6 +149,8 @@ export function applyCosmeticExceptions(
   const dropped = new Set<ContentBlockingRule>();
   const excepted = new Set<ContentBlockingRule>();
   const narrowed = new Set<ContentBlockingRule>();
+  // Domain hides' bare if-domain entries that an exception's subdomain sits under.
+  const keepExact = new Map<ContentBlockingRule, Set<string>>();
   for (const ex of exceptions) {
     if (ex.unexpressible) stats.unexpressible++;
     const targets = (bySelector.get(ex.selector) ?? []).filter((r) => !dropped.has(r));
@@ -157,6 +173,14 @@ export function applyCosmeticExceptions(
         excepted.add(rule);
       } else {
         const remaining = ifDomain.filter((d) => !ex.hosts.includes(d.replace(/^\*/, '')));
+        for (const d of remaining) {
+          const base = d.replace(/^\*/, '');
+          if (ex.hosts.some((h) => h.endsWith(`.${base}`))) {
+            const set = keepExact.get(rule) ?? new Set<string>();
+            set.add(d);
+            keepExact.set(rule, set);
+          }
+        }
         if (remaining.length === ifDomain.length) continue;
         if (remaining.length === 0) dropped.add(rule);
         else {
@@ -167,8 +191,30 @@ export function applyCosmeticExceptions(
     }
   }
 
+  const kept = rules.filter((r) => !dropped.has(r));
+  const prefix = (entries: string[], exact?: Set<string>) => {
+    const out = new Set<string>();
+    for (const d of entries) {
+      if (d.startsWith('*')) out.add(d);
+      else if (exact?.has(d)) {
+        out.add(d);
+        stats.domains_kept_exact++;
+      } else {
+        out.add(`*${d}`);
+        stats.domains_prefixed++;
+      }
+    }
+    return [...out];
+  };
+  for (const rule of kept) {
+    if (!isHide(rule)) continue;
+    const t = rule.trigger;
+    if (t['if-domain']) t['if-domain'] = prefix(t['if-domain'], keepExact.get(rule));
+    if (t['unless-domain']) t['unless-domain'] = prefix(t['unless-domain']);
+  }
+
   stats.rules_dropped = dropped.size;
   stats.generic_rules_excepted = [...excepted].filter((r) => !dropped.has(r)).length;
   stats.domain_rules_narrowed = [...narrowed].filter((r) => !dropped.has(r)).length;
-  return { rules: rules.filter((r) => !dropped.has(r)), stats };
+  return { rules: kept, stats };
 }

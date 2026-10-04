@@ -138,7 +138,8 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
       `  #@# exceptions: ${exceptionStats.exceptions} — ${exceptionStats.generic_rules_excepted} generic hide(s) ` +
       `excepted, ${exceptionStats.domain_rules_narrowed} narrowed, ${exceptionStats.rules_dropped} dropped, ` +
       `${exceptionStats.unmatched} unmatched, ${exceptionStats.unexpressible} unexpressible; ` +
-      `${exceptionStats.entity_hides_dropped} entity+negation hide(s) dropped`,
+      `${exceptionStats.entity_hides_dropped} entity+negation hide(s) dropped; ` +
+      `${exceptionStats.domains_prefixed} domain(s) given *, ${exceptionStats.domains_kept_exact} kept exact`,
     );
 
     // ── Desktop artifact: the raw ABP list text, compiled by the browser
