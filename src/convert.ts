@@ -1,4 +1,9 @@
 import { FilterSet, type ContentBlockingRule, type FilterListMetadata } from 'adblock-rs';
+import {
+  applyCosmeticExceptions,
+  splitCosmeticExceptions,
+  type CosmeticExceptionStats,
+} from './cosmetic-exceptions.ts';
 
 export interface ConvertResult {
   /// Block / css-display-none / domain-scoped exception rules — sharded freely.
@@ -11,6 +16,8 @@ export interface ConvertResult {
   tailRules: ContentBlockingRule[];
   listMeta: FilterListMetadata;
   inputRuleCount: number;
+  /** How the list's `#@#` exceptions were applied (see cosmetic-exceptions.ts). */
+  exceptionStats: CosmeticExceptionStats;
 }
 
 export function convert(text: string): ConvertResult {
@@ -22,20 +29,25 @@ export function convert(text: string): ConvertResult {
     return t.length > 0 && !t.startsWith('!') && !t.startsWith('[Adblock');
   }).length;
 
+  // Cosmetic exceptions never reach adblock-rs: it would turn each into a
+  // global hide (cosmetic-exceptions.ts). They're applied after conversion.
+  const { text: withoutExceptions, exceptions, entityHidesDropped } = splitCosmeticExceptions(text);
+
   const fs = new FilterSet(true); // debug=true required for intoContentBlocking()
-  const listMeta = fs.addFilters(lines);
+  const listMeta = fs.addFilters(withoutExceptions.split(/\r?\n/));
   const result = fs.intoContentBlocking();
   if (!result) {
     throw new Error('intoContentBlocking() returned undefined; FilterSet must be debug=true');
   }
 
-  const mainRules = [...result.contentBlockingRules];
+  const converted = [...result.contentBlockingRules];
   const tailRules: ContentBlockingRule[] = [];
-  while (mainRules.length > 0 && isCatchAllSafetyRule(mainRules[mainRules.length - 1]!)) {
-    tailRules.unshift(mainRules.pop()!);
+  while (converted.length > 0 && isCatchAllSafetyRule(converted[converted.length - 1]!)) {
+    tailRules.unshift(converted.pop()!);
   }
+  const { rules: mainRules, stats: exceptionStats } = applyCosmeticExceptions(converted, exceptions, entityHidesDropped);
 
-  return { mainRules, tailRules, listMeta, inputRuleCount };
+  return { mainRules, tailRules, listMeta, inputRuleCount, exceptionStats };
 }
 
 /// A catch-all safety rule: `ignore-previous-rules` whose URL filter matches

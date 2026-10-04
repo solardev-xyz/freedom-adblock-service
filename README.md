@@ -39,6 +39,15 @@ Edit `sources.json` to add/remove lists. Defaults: EasyList (ads), EasyPrivacy (
 
 `sources.json` also pins `resources.json` (tag + sha256), in lockstep with desktop's `scripts/fetch-adblock-lists.js` — re-pin both together.
 
+### Cosmetic exceptions (iOS)
+
+adblock-rs's WebKit conversion turns a `host#@#selector` exception into a *hide* everywhere except `host`, and turns `site.*,~host##selector` into a hide everywhere except `host`. Both are global over-hides, which is how v145 blanked the YouTube player. `src/cosmetic-exceptions.ts` keeps both shapes away from adblock-rs:
+
+- An exception is applied to the hides from its own list. It joins a generic hide's `unless-domain` as `*host`, or removes its host from a domain hide's `if-domain`.
+- `#@#selector` with no host drops every hide of that selector.
+- Anything WebKit can't express is dropped (entities, cross-list exceptions).
+- Per-list counts go in `metadata.json` → `cosmetic_exceptions`.
+
 ### Scriptlets (iOS)
 
 `scriptlets.json` mirrors what desktop's `@ghostery/adblocker` (same pinned release) does with each `+js()` line: generic injections, unknown names and regex hostnames are dropped, `trusted-*` scriptlets are allowed only from the uBlock list, JS surrogates (`+js(nofab)` …) are kept as `kind: "surrogate"`. Every drop is counted in the file's `dropped`. Output is deterministic, so its sha256 only changes when the rules do.

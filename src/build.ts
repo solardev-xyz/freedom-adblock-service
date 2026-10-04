@@ -126,13 +126,19 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
     scriptletInputs.push({ id, text: fetched.text, trusted: category.trusted_scriptlets === true });
 
     const t1 = performance.now();
-    const { mainRules, tailRules, listMeta, inputRuleCount } = convert(fetched.text);
+    const { mainRules, tailRules, listMeta, inputRuleCount, exceptionStats } = convert(fetched.text);
     const totalRules = mainRules.length + tailRules.length;
     console.log(
       `  converted ${inputRuleCount.toLocaleString()} input lines → ` +
       `${totalRules.toLocaleString()} rules ` +
       `(${mainRules.length.toLocaleString()} main + ${tailRules.length} safety-tail) ` +
       `in ${Math.round(performance.now() - t1)}ms`,
+    );
+    console.log(
+      `  #@# exceptions: ${exceptionStats.exceptions} — ${exceptionStats.generic_rules_excepted} generic hide(s) ` +
+      `excepted, ${exceptionStats.domain_rules_narrowed} narrowed, ${exceptionStats.rules_dropped} dropped, ` +
+      `${exceptionStats.unmatched} unmatched, ${exceptionStats.unexpressible} unexpressible; ` +
+      `${exceptionStats.entity_hides_dropped} entity+negation hide(s) dropped`,
     );
 
     // ── Desktop artifact: the raw ABP list text, compiled by the browser
@@ -159,7 +165,7 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
         id, platforms, source_url: url, source_sha256: fetched.sha256, source_byte_size: fetched.byteSize,
         ...(ublockSource ? { source: ublockSource } : {}),
         list_title: listMeta.title, list_homepage: listMeta.homepage, list_expires: listMeta.expires,
-        input_rule_count: inputRuleCount, output_rule_count: totalRules, shards: [],
+        input_rule_count: inputRuleCount, output_rule_count: totalRules, cosmetic_exceptions: exceptionStats, shards: [],
       });
       continue;
     }
@@ -213,6 +219,7 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
       list_expires: listMeta.expires,
       input_rule_count: inputRuleCount,
       output_rule_count: totalRules,
+      cosmetic_exceptions: exceptionStats,
       shards: shardMeta.map(({ shard, filename }) => ({
         filename,
         rule_count: shard.rules.length,

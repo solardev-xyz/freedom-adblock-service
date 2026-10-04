@@ -26,6 +26,8 @@ export interface CategoryMetadata {
   list_expires: unknown; // upstream serializes a Rust enum, e.g. `{ "Days": 4 }`
   input_rule_count: number;
   output_rule_count: number;
+  /** iOS conversion: how the list's `#@#` exceptions were applied. */
+  cosmetic_exceptions: import('./cosmetic-exceptions.ts').CosmeticExceptionStats;
   shards: ShardMetadata[];
 }
 
