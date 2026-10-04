@@ -57,14 +57,22 @@ export async function createSwarmClient(cfg: SwarmConfig): Promise<SwarmClient> 
   const reader = bee.makeFeedReader(topic, owner);
   const writer = bee.makeFeedWriter(topic, signer);
 
-  async function nextIndex(): Promise<number> {
+  // The index the next write goes to, learned from the latest read. A write
+  // reuses it rather than looking the feed up a second time: a second lookup
+  // that 404s (evicted chunks, a node still syncing) would otherwise restart
+  // the feed at index 0, behind the manifest publish() just versioned.
+  let nextWriteIndex: number | undefined;
+
+  async function readLatest(): Promise<{ manifest: FeedManifest; next: number } | null> {
     try {
       const latest = await reader.downloadPayload();
-      return latest.feedIndexNext
+      const text = Buffer.from(latest.payload.toUint8Array()).toString('utf8');
+      const next = latest.feedIndexNext
         ? Number(latest.feedIndexNext.toBigInt())
         : Number(latest.feedIndex.toBigInt()) + 1;
+      return { manifest: JSON.parse(text) as FeedManifest, next };
     } catch (err) {
-      if (isNotFound(err)) return 0;
+      if (isNotFound(err)) return null;
       throw err;
     }
   }
@@ -75,18 +83,14 @@ export async function createSwarmClient(cfg: SwarmConfig): Promise<SwarmClient> 
       return toHex(res.reference);
     },
     async readLatestManifest(): Promise<FeedManifest | null> {
-      try {
-        const latest = await reader.downloadPayload();
-        const text = Buffer.from(latest.payload.toUint8Array()).toString('utf8');
-        return JSON.parse(text) as FeedManifest;
-      } catch (err) {
-        if (isNotFound(err)) return null;
-        throw err;
-      }
+      const latest = await readLatest();
+      nextWriteIndex = latest?.next ?? 0;
+      return latest?.manifest ?? null;
     },
     async writeManifest(payload: string): Promise<void> {
-      const index = await nextIndex();
+      const index = nextWriteIndex ?? (await readLatest())?.next ?? 0;
       await writer.uploadPayload(batchId, payload, { index });
+      nextWriteIndex = index + 1;
     },
     async batchStatus() {
       try {

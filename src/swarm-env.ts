@@ -9,6 +9,8 @@ export interface SwarmEnv {
   beeUrl: string;
   batchId?: string;
   address: string; // derived from signerKey; clients pin this
+  /** FEED_MIN_VERSION — see PublishOptions.minVersion. */
+  minVersion?: number;
 }
 
 export function readSwarmEnv(): SwarmEnv {
@@ -18,7 +20,11 @@ export function readSwarmEnv(): SwarmEnv {
   }
   const beeUrl = process.env.BEE_API_URL ?? 'http://127.0.0.1:1633';
   const batchId = process.env.STAMP_BATCH_ID;
-  return { signerKey, beeUrl, batchId, address: signerAddress(signerKey) };
+  const minVersion = process.env.FEED_MIN_VERSION ? Number(process.env.FEED_MIN_VERSION) : undefined;
+  if (minVersion !== undefined && !(Number.isInteger(minVersion) && minVersion >= 1)) {
+    throw new Error(`FEED_MIN_VERSION must be a positive integer, got ${process.env.FEED_MIN_VERSION}`);
+  }
+  return { signerKey, beeUrl, batchId, address: signerAddress(signerKey), minVersion };
 }
 
 export function printSwarmBanner(env: SwarmEnv): void {
@@ -26,5 +32,6 @@ export function printSwarmBanner(env: SwarmEnv): void {
   console.log(`Feed topic:          ${FEED_TOPIC}`);
   console.log(`Bee API:             ${env.beeUrl}`);
   console.log(`Batch:               ${env.batchId ?? '(auto-select most TTL)'}`);
+  console.log(`Min version:         ${env.minVersion ?? '(none — an empty feed lookup starts at 1)'}`);
   console.log('→ Clients must pin this owner/signer as FEED_OWNER_ADDRESS / MANIFEST_SIG_ADDRESS.\n');
 }

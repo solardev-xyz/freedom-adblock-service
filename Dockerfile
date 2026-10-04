@@ -27,5 +27,6 @@ ENV NODE_ENV=production
 
 # Long-running publisher daemon. All config via env — see bin/serve.ts:
 #   FEED_SIGNER_KEY (required), BEE_API_URL, STAMP_BATCH_ID,
-#   BUILD_INTERVAL_HOURS (default 12), BATCH_TTL_FLOOR_DAYS (default 30)
+#   BUILD_INTERVAL_HOURS (default 24), BATCH_TTL_FLOOR_DAYS (default 30),
+#   FEED_MIN_VERSION
 CMD ["npm", "run", "serve:swarm"]

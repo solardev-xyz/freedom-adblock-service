@@ -173,3 +173,60 @@ test('guard rejects a list that shrank sharply versus the live feed', async () =
   );
   await rm(outDir, { recursive: true, force: true });
 });
+
+test('uploadAll re-uploads blobs whose refs are already on the feed', async () => {
+  const { outDir, manifest } = await fixture();
+  const first = (await publish(manifest, outDir, fakeClient(null).client, SIGNER, NO_GUARD)).manifest;
+
+  const fake = fakeClient(first);
+  const second = await publish(manifest, outDir, fake.client, SIGNER, { guard: false, uploadAll: true });
+
+  assert.equal(fake.uploads.length, 2, 'both blobs re-uploaded (re-stamped)');
+  assert.equal(second.changed, false, 'same content-addressed refs -> still no feed write');
+  await rm(outDir, { recursive: true, force: true });
+});
+
+test('minVersion skips past a version that was written but never stayed retrievable', async () => {
+  const { outDir, manifest } = await fixture();
+  // The feed resolves v142, but a v143 was written and lost with its batch;
+  // clients that fetched it in time would reject a new v143.
+  const live: FeedManifest = { ...JSON.parse(JSON.stringify(manifest)), version: 142 };
+  live.platforms.desktop.lists[0].sha256 = 'older-content';
+
+  const fake = fakeClient(live);
+  const { manifest: published } = await publish(manifest, outDir, fake.client, SIGNER, {
+    guard: false,
+    minVersion: 144,
+  });
+
+  assert.equal(published.version, 144);
+  assert.equal(fake.latest?.version, 144);
+  await rm(outDir, { recursive: true, force: true });
+});
+
+test('minVersion is a floor, not a pin: later publishes keep counting up', async () => {
+  const { outDir, manifest } = await fixture();
+  const live: FeedManifest = { ...JSON.parse(JSON.stringify(manifest)), version: 200 };
+  live.platforms.desktop.lists[0].sha256 = 'older-content';
+
+  const { manifest: published } = await publish(manifest, outDir, fakeClient(live).client, SIGNER, {
+    guard: false,
+    minVersion: 144,
+  });
+
+  assert.equal(published.version, 201);
+  await rm(outDir, { recursive: true, force: true });
+});
+
+test('minVersion refuses to restart the feed when the lookup finds nothing', async () => {
+  const { outDir, manifest } = await fixture();
+  const fake = fakeClient(null); // lookup 404 — evicted chunks, node still syncing, …
+
+  await assert.rejects(
+    () => publish(manifest, outDir, fake.client, SIGNER, { guard: false, minVersion: 144 }),
+    /refusing to restart it at version 1/,
+  );
+  assert.equal(fake.uploads.length, 0, 'nothing uploaded');
+  assert.equal(fake.latest, null, 'nothing written');
+  await rm(outDir, { recursive: true, force: true });
+});

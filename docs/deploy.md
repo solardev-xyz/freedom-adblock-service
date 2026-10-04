@@ -16,9 +16,11 @@ design and `../../freedom-browser/research/wp5-build-status.md` for live status.
    raw text + iOS WebKit-JSON shards, write `out/`.
 2. `publish()` — read the current feed; **sanity-guard** the new build (reject a
    list that is implausibly small or shrank >50% vs live — catches a broken
-   upstream fetch); upload only changed blobs; **skip the feed write entirely if
-   nothing changed** (no version churn); otherwise bump the monotonic version,
-   sign (EIP-191), and write the feed.
+   upstream fetch); upload **every** blob the manifest references (re-stamping
+   unchanged ones too, so everything the feed points at is carried by the
+   current batch); **skip the feed write entirely if nothing changed** (no
+   version churn); otherwise bump the monotonic version, sign (EIP-191), and
+   write the feed.
 3. Report the postage batch's remaining TTL; **warn** below the floor.
 
 A failing cycle (bad build, node down, guard trip) is logged and retried next
@@ -31,8 +33,9 @@ tick — the daemon never crashes and the last-good feed stays live.
 | `FEED_SIGNER_KEY` | ✅ | — | 0x hex. Feed owner **and** manifest signer. Clients pin its address. Store as a Coolify secret. |
 | `BEE_API_URL` | | `http://127.0.0.1:1633` | On Coolify: `http://bee:1633` (the node's network alias). |
 | `STAMP_BATCH_ID` | recommended | most-TTL batch | Pin the dedicated adblock batch so it never grabs the curator's. |
-| `BUILD_INTERVAL_HOURS` | | `12` | Clients poll every 6h; upstream updates a few times/day. |
+| `BUILD_INTERVAL_HOURS` | | `24` | Clients poll every 6h. Each changed cycle re-uploads ~all of the ~30MB, so cadence drives batch fill (see step 1); EasyList itself declares a 4-day expiry. |
 | `BATCH_TTL_FLOOR_DAYS` | | `30` | Warn (not fail) below this remaining TTL. |
+| `FEED_MIN_VERSION` | recommended | — | Lowest version to write, and a declaration that the feed has history: a feed lookup that finds nothing then fails the cycle instead of restarting the feed at version 1 (which every client rejects). Set to one above the highest version ever written. |
 
 ## Deploying on the Swarmit Coolify server
 
@@ -47,30 +50,53 @@ Two properties are **load-bearing** — getting either wrong loses data:
 rewrites; an immutable batch's buckets fill and writes start failing (the
 swarmit README learned this the hard way).
 
-**Depth ≥ 20**: a batch of depth D is divided into 2^16 buckets with
-`2^(D-16)` slots each, and every 4KB chunk lands in a bucket by content hash
-— effectively at random. One publish here is ~18MB ≈ 4,500 chunks; at depth
-17 (2 slots/bucket) the birthday math guarantees a few buckets overflow, and
-**on a mutable batch an overflowing bucket silently overwrites its oldest
+**Deep enough that no bucket fills during the batch's life**: a batch of
+depth D is divided into 2^16 buckets with `2^(D-16)` slots each, and every 4KB
+chunk lands in a bucket by content hash — effectively at random. **On a
+mutable batch a full bucket wraps around and silently overwrites its oldest
 stamp** — previously published chunks vanish from the network with no error
-anywhere (we lost 3 of 15 shards this way on 2026-07-06; the batch showed
-`utilization: 2`, i.e. fullest bucket maxed). Depth 20 = 16 slots/bucket,
-comfortably safe for this workload. The daemon warns every cycle if the batch
-is shallower than 20 or its utilization nears the slot count.
+anywhere (we lost 3 of 15 shards this way at depth 17 on 2026-07-06; the batch
+showed `utilization: 2`, i.e. fullest bucket maxed). What fills buckets is the
+*cumulative* upload over the batch's life, not one publish: measured
+2026-09, 18–19 of 19 blobs change every cycle, ≈30MB ≈ 7.5k new chunks per
+cycle (~40MB once the scriptlet artifacts land). The depth-20 batch hit
+`utilization 16/16` after ~10 weeks at a 12h cadence. Wrapping only eats
+superseded versions as long as every blob churns, but a blob that stays the
+same (e.g. a pinned resource file) holds the oldest stamps and goes first.
+Rule of thumb for 65,536 buckets: the fullest bucket reaches its slot count
+after roughly `days ≈ k × 65536 / chunks_per_day` with k ≈ 5 at depth 20
+(16 slots), 14 at depth 21 (32), 36 at depth 22 (64). At ~10k chunks/day
+(daily cadence) that is ~33 days at depth 20 and ~90 days at depth 21. Pick
+the depth so this exceeds the time until the batch is replaced. The daemon
+warns every cycle if the batch is shallower than 20 or its utilization nears
+the slot count.
+
+**Price it from the chain, not from a past purchase**: the per-chunk storage
+price moves (63k PLUR/chunk/block on 2026-07-06, 140k on 2026-10-04), and a
+batch's lifetime is `balance / price` — **a price rise shortens the TTL of
+every existing batch**. That is what expired the depth-20 batch on 2026-09-19,
+12 days before its planned end.
 
 ```bash
-# cost = amount × 2^depth PLUR (1 xBZZ = 1e16 PLUR); amount ≈ 1.1e9 × days.
-# Depth 20, ~90 days ≈ 10 xBZZ:
+# price in PLUR per chunk per block (Gnosis, ~5.1s blocks ≈ 16,900/day):
+cast call --rpc-url https://rpc.gnosischain.com \
+  0x45a1502382541Cd610CC9068e88727426b696293 'lastPrice()(uint64)'
+# amount = price × 16900 × days;  cost = amount × 2^depth PLUR (1 xBZZ = 1e16 PLUR)
+# e.g. 2026-10-04: 140144 × 16900 × 60 ≈ 1.43e11 → depth 21 ≈ 30 xBZZ
 ssh root@5.78.195.10 "docker run --rm --network coolify curlimages/curl:latest \
   -s -X POST -H 'Immutable: false' \
-  'http://bee:1633/stamps/95000000000/20?label=freedom-adblock'"
+  'http://bee:1633/stamps/<amount>/21?label=freedom-adblock-d21'"
 # → { "batchID": "…" }   ← this is STAMP_BATCH_ID
 ```
 
-**If a batch ever loses chunks** (blobs truncate mid-download even from the
-origin node): buy a correct batch, `PATCH` `STAMP_BATCH_ID`, redeploy, then
-force a full re-upload — refs stay identical (content-addressed), the chunks
-get re-stamped and re-pushed:
+**If a batch ever loses chunks or expires** (blobs 404 or truncate even from
+the origin node): buy a correct batch, `PATCH` `STAMP_BATCH_ID`, set
+`FEED_MIN_VERSION` to one above the highest version the daemon ever logged as
+written (a version written just before a batch died may never have become
+retrievable, yet a client may have applied it — so skip past it), and
+redeploy. The daemon's first cycle re-uploads every blob into the new batch —
+refs stay identical (content-addressed), the chunks get re-stamped and
+re-pushed. The one-shot CLI does the same on demand:
 
 ```bash
 docker exec -e FORCE_REUPLOAD=1 <container> npm run publish:swarm
@@ -93,8 +119,9 @@ ssh root@5.78.195.10 "docker run --rm --network coolify curlimages/curl:latest \
 - **Env vars** (via API or UI — see swarmit README for the API recipe):
   - `BEE_API_URL=http://bee:1633`
   - `STAMP_BATCH_ID=<the batch from step 1>`
-  - `BUILD_INTERVAL_HOURS=12`
+  - `BUILD_INTERVAL_HOURS=24`
   - `BATCH_TTL_FLOOR_DAYS=30`
+  - `FEED_MIN_VERSION=<highest version ever written + 1>`
   - `FEED_SIGNER_KEY=<key>` — **secret**. For the test server this is the
     throwaway key (address `0xf6aa…FCE0`); production uses a fresh durable key
     whose address is then hard-coded into the desktop client's `feed-config.js`
@@ -123,8 +150,12 @@ Then confirm a client can read it — point a dev desktop build at the feed with
     -s -X PATCH 'http://bee:1633/stamps/topup/<BATCH_ID>/<amount>'"
   ```
 
-  Expired batches are gone for good — top up before the TTL date. (Auto-topup
-  via the node API is a possible later enhancement.)
+  Expired batches are gone for good — top up before the TTL date, and re-check
+  the TTL rather than trusting the purchase-time estimate (price rises shorten
+  it). `amount` is per chunk: `price × 16900 × extra_days`. Topping up extends
+  the TTL but adds no bucket slots — once utilization nears the slot count,
+  replace the batch (recovery steps above) or `dilute` it. (Alerting /
+  auto-topup is a planned separate project.)
 
 - **Node xBZZ**: top-up spends from the node wallet; keep it funded. If low, move
   BZZ from the chequebook first (`POST /chequebook/withdraw` — see swarmit README).

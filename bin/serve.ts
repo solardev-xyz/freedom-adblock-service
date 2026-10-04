@@ -9,12 +9,13 @@ import { abortableSleep } from '../src/sleep.ts';
 // Deployed as a long-running container alongside a Bee/Ant node (see Dockerfile
 // and docs/deploy.md).
 //
-// Env — FEED_SIGNER_KEY / BEE_API_URL / STAMP_BATCH_ID (see src/swarm-env.ts), plus:
-//   BUILD_INTERVAL_HOURS  cycle cadence, default 12
+// Env — FEED_SIGNER_KEY / BEE_API_URL / STAMP_BATCH_ID / FEED_MIN_VERSION
+// (see src/swarm-env.ts), plus:
+//   BUILD_INTERVAL_HOURS  cycle cadence, default 24
 //   BATCH_TTL_FLOOR_DAYS  warn below this TTL, default 30
 
 const env = readSwarmEnv();
-const intervalMs = (Number(process.env.BUILD_INTERVAL_HOURS) || 12) * 60 * 60 * 1000;
+const intervalMs = (Number(process.env.BUILD_INTERVAL_HOURS) || 24) * 60 * 60 * 1000;
 const batchTtlFloorSec = (Number(process.env.BATCH_TTL_FLOOR_DAYS) || 30) * 24 * 60 * 60;
 
 printSwarmBanner(env);
@@ -56,7 +57,7 @@ if (!client) {
 }
 
 await runServeLoop(
-  { signerKey: env.signerKey, intervalMs, batchTtlFloorSec },
+  { signerKey: env.signerKey, intervalMs, batchTtlFloorSec, minVersion: env.minVersion },
   { build: () => buildArtifacts(), client },
   controller.signal,
 );

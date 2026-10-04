@@ -71,6 +71,16 @@ export interface PublishOptions {
    * or otherwise lost data.
    */
   uploadAll?: boolean;
+  /**
+   * Lowest version this publish may write — and a declaration that the feed
+   * has history. Clients reject any manifest whose version is <= one they have
+   * applied, so after a version was written but never stayed retrievable (the
+   * 2026-09-19 batch expiry ate v143 within the hour), the next write must
+   * skip past it. And since the feed is known to exist, a lookup that finds
+   * nothing is a node/network failure, not an empty feed: publishing would
+   * restart the feed at version 1, which every client rejects as a downgrade.
+   */
+  minVersion?: number;
 }
 
 export interface PublishResult {
@@ -159,8 +169,10 @@ function contentKey(manifest: FeedManifest): string {
  *   1. read the current feed manifest to learn the last version + prior refs
  *   2. sanity-guard the new build against it (floors + max shrink)
  *   3. upload every blob whose sha256 is new; reuse the prior ref otherwise
+ *      (or upload all of them, with uploadAll)
  *   4. if content is unchanged, skip the write (no version churn); otherwise
- *      set version = lastVersion + 1 (monotonic), sign, and write to the feed
+ *      set version = max(lastVersion + 1, minVersion) (monotonic), sign, and
+ *      write to the feed
  *
  * @returns what is now current on the feed + whether a new version was written
  */
@@ -173,6 +185,13 @@ export async function publish(
 ): Promise<PublishResult> {
   const guard = options.guard ?? DEFAULT_GUARD;
   const previous = await client.readLatestManifest();
+  const minVersion = options.minVersion ?? 1;
+  if (!previous && minVersion > 1) {
+    throw new Error(
+      `feed lookup found no manifest, but the feed has history (min version ${minVersion}) — ` +
+      `refusing to restart it at version 1; check the node`,
+    );
+  }
   const lastVersion = previous?.version ?? 0;
 
   if (guard) assertSaneManifest(manifest, previous, guard);
@@ -220,7 +239,7 @@ export async function publish(
 
   const withRefs: FeedManifest = {
     ...manifest,
-    version: lastVersion + 1,
+    version: Math.max(lastVersion + 1, minVersion),
     platforms: { desktop: { lists: desktopLists }, ios: { lists: iosLists } },
   };
 

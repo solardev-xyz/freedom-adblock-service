@@ -28,6 +28,8 @@ export interface ServeConfig {
   intervalMs: number;
   /** Warn when the postage batch drops below this many seconds of TTL. */
   batchTtlFloorSec: number;
+  /** Lowest version to write; also refuses an empty feed lookup (PublishOptions.minVersion). */
+  minVersion?: number;
 }
 
 export interface ServeIO {
@@ -66,7 +68,16 @@ export async function runPublishCycle(config: ServeConfig, io: ServeIO): Promise
   const publishFn = io.publish ?? defaultPublish;
 
   const { manifest, outDir } = await io.build();
-  const result = await publishFn(manifest, outDir, io.client, config.signerKey);
+  // Re-stamp every blob the manifest references, not just the changed ones,
+  // so everything the live feed points at is carried by the CURRENT batch: a
+  // batch switch, or chunks lost from the network, heal on the next cycle
+  // instead of leaving reused refs on chunks only a dead batch paid for. Cheap
+  // — nearly every blob changes each cycle anyway — and re-uploading an
+  // already-stamped chunk keeps its bucket slot rather than taking a new one.
+  const result = await publishFn(manifest, outDir, io.client, config.signerKey, {
+    uploadAll: true,
+    minVersion: config.minVersion,
+  });
 
   if (result.changed) {
     log.info(

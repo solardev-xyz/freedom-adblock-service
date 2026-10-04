@@ -9,7 +9,8 @@ import { FEED_TOPIC, type FeedManifest } from '../src/manifest.ts';
 
 // Publish the freshly-built out/feed-manifest.json to the Swarm feed.
 // Run `npm run build` first. Requires a funded local Ant/Bee node.
-// Env (see src/swarm-env.ts): FEED_SIGNER_KEY (required), BEE_API_URL, STAMP_BATCH_ID.
+// Env (see src/swarm-env.ts): FEED_SIGNER_KEY (required), BEE_API_URL, STAMP_BATCH_ID,
+// FEED_MIN_VERSION.
 // FORCE_REUPLOAD=1 re-uploads every blob even when its ref is already on the
 // feed — the recovery move after a batch lost chunks (see PublishOptions).
 
@@ -25,7 +26,10 @@ const manifest = JSON.parse(
 
 const client = await createSwarmClient(env);
 const uploadAll = process.env.FORCE_REUPLOAD === '1';
-const result = await publish(manifest, outDir, client, env.signerKey, { uploadAll });
+const result = await publish(manifest, outDir, client, env.signerKey, {
+  uploadAll,
+  minVersion: env.minVersion,
+});
 
 if (result.changed) {
   console.log(`\n✓ published version ${result.manifest.version} to feed ${FEED_TOPIC} (owner ${env.address})`);

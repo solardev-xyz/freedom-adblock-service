@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { runPublishCycle, runServeLoop, type ServeIO, type Logger } from '../src/serve.ts';
-import type { SwarmClient, PublishResult } from '../src/publish.ts';
+import type { SwarmClient, PublishResult, PublishOptions } from '../src/publish.ts';
 import type { BuildResult } from '../src/build.ts';
 import type { FeedManifest } from '../src/manifest.ts';
 
@@ -107,6 +107,20 @@ test('runPublishCycle stays quiet on a healthy deep batch', async () => {
   const { log, lines } = collectingLogger();
   await runPublishCycle(CONFIG, fakeIO({ depth: 20, utilization: 3, log }));
   assert.ok(!lines.some((l) => l.startsWith('warn')), lines.join('\n'));
+});
+
+test('runPublishCycle re-stamps every blob and passes the version floor', async () => {
+  let seen: PublishOptions | undefined;
+  const io: ServeIO = {
+    ...fakeIO({}),
+    publish: async (_m, _o, _c, _k, options): Promise<PublishResult> => {
+      seen = options;
+      return { manifest: fakeManifest(144), changed: true, uploaded: 1, reused: 0 };
+    },
+  };
+  await runPublishCycle({ ...CONFIG, minVersion: 144 }, io);
+  assert.equal(seen?.uploadAll, true, 'every referenced blob is re-uploaded each cycle');
+  assert.equal(seen?.minVersion, 144);
 });
 
 test('runServeLoop runs until aborted and a failing cycle does not stop it', async () => {
