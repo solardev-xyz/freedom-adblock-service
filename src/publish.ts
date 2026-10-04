@@ -50,12 +50,19 @@ export interface GuardThresholds {
   minRuleCount: number;
   /** Reject a list that shrank to below (1 - ratio) of its live size. */
   maxShrinkRatio: number;
+  /**
+   * Reject a scriptlet index below this many rules. uBlock's own lists carry
+   * ~9k of the ~12k; a failed uAssets fetch fails the build outright, but a
+   * fetch that "succeeds" with a stub would otherwise strip YouTube & co.
+   */
+  minScriptletRules: number;
 }
 
 export const DEFAULT_GUARD: GuardThresholds = {
   minBytes: 1024,
   minRuleCount: 50,
   maxShrinkRatio: 0.5,
+  minScriptletRules: 1000,
 };
 
 export interface PublishOptions {
@@ -124,6 +131,8 @@ function listSizes(manifest: FeedManifest): Map<string, { bytes: number; rules: 
     );
     sizes.set(`ios:${list.list_id}`, total);
   }
+  const { scriptlets } = manifest.platforms.ios;
+  if (scriptlets) sizes.set('ios:scriptlets', { bytes: scriptlets.bytes, rules: scriptlets.rule_count });
   return sizes;
 }
 
@@ -152,6 +161,16 @@ export function assertSaneManifest(
         `(>${Math.round(t.maxShrinkRatio * 100)}% drop) — refusing to publish`,
       );
     }
+  }
+  const { scriptlets, resources } = next.platforms.ios;
+  if (scriptlets && scriptlets.rule_count < t.minScriptletRules) {
+    throw new Error(
+      `guard: ios:scriptlets has ${scriptlets.rule_count} rules ` +
+      `(floor ${t.minScriptletRules}) — refusing to publish`,
+    );
+  }
+  if (resources && resources.bytes < t.minBytes) {
+    throw new Error(`guard: ios:resources too small (${resources.bytes} bytes) — refusing to publish`);
   }
 }
 
@@ -207,6 +226,9 @@ export async function publish(
         if (shard.ref) knownRefs.set(shard.sha256, shard.ref);
       }
     }
+    for (const blob of [previous.platforms.ios.scriptlets, previous.platforms.ios.resources]) {
+      if (blob?.ref) knownRefs.set(blob.sha256, blob.ref);
+    }
   }
 
   let uploaded = 0;
@@ -237,10 +259,21 @@ export async function publish(
     iosLists.push({ ...list, shards });
   }
 
+  // Optional iOS scriptlet artifacts (scriptlets.json + resources.json).
+  const { scriptlets, resources } = manifest.platforms.ios;
+  const iosExtras = {
+    ...(scriptlets && {
+      scriptlets: { ...scriptlets, ref: await refFor(blobPath(outDir, 'ios', scriptlets.filename), scriptlets.sha256) },
+    }),
+    ...(resources && {
+      resources: { ...resources, ref: await refFor(blobPath(outDir, 'ios', resources.filename), resources.sha256) },
+    }),
+  };
+
   const withRefs: FeedManifest = {
     ...manifest,
     version: Math.max(lastVersion + 1, minVersion),
-    platforms: { desktop: { lists: desktopLists }, ios: { lists: iosLists } },
+    platforms: { desktop: { lists: desktopLists }, ios: { lists: iosLists, ...iosExtras } },
   };
 
   if (!options.forceRepublish && previous && contentKey(withRefs) === contentKey(previous)) {

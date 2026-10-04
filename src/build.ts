@@ -7,6 +7,16 @@ import { fetchSource } from './fetch.ts';
 import { convert } from './convert.ts';
 import { shardRules } from './shard.ts';
 import { writeMetadata, type CategoryMetadata, type BuildMetadata } from './metadata.ts';
+import { fetchUblockSource, type UblockPin } from './ublock.ts';
+import { fetchResources, type ResourcesConfig } from './resources.ts';
+import {
+  SCRIPTLETS_FORMAT,
+  emptyDropCounts,
+  extractScriptletRules,
+  indexResources,
+  serializeScriptletsDoc,
+  type ScriptletRule,
+} from './scriptlets.ts';
 import {
   MANIFEST_SCHEMA,
   writeFeedManifest,
@@ -19,9 +29,21 @@ interface SourcesFile {
   categories: Array<{
     id: string;
     url: string;
-    desktop_category: string;
+    /** Absent on lists that only ship to iOS. */
+    desktop_category?: string;
     license: string;
+    /** Manifest sections that carry this list. */
+    platforms: Array<'desktop' | 'ios'>;
+    /** 'ublock': fetched at a uAssets commit and preprocessed (src/ublock.ts). */
+    format?: 'ublock';
+    extra_urls?: string[];
+    pin?: UblockPin;
+    /** May invoke trust-requiring scriptlets (desktop: TRUSTED_SCRIPTLET_CATEGORIES). */
+    trusted_scriptlets?: boolean;
   }>;
+  /** `!#if` tokens for uBlock-format lists; any token not listed is false. */
+  ublock_env: Record<string, boolean>;
+  resources: ResourcesConfig & { title: string };
 }
 
 export interface BuildResult {
@@ -70,17 +92,38 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
   // step (5.A2) uploads each blob and fills in its bzz reference.
   const desktopLists: DesktopListEntry[] = [];
   const iosLists: IosListEntry[] = [];
+  // Every list's text, in sources.json order, for the scriptlet index.
+  const scriptletInputs: Array<{ id: string; text: string; trusted: boolean }> = [];
+  const ublockEnv = new Map(Object.entries(sources.ublock_env));
 
-  for (const { id, url, desktop_category, license } of sources.categories) {
+  for (const category of sources.categories) {
+    const { id, url, desktop_category, license, platforms } = category;
     console.log(`\n→ ${id}`);
-    console.log(`  source: ${url}`);
+    console.log(`  source: ${url}${category.extra_urls ? ` (+${category.extra_urls.length})` : ''}`);
 
     const t0 = performance.now();
-    const fetched = await fetchSource(url);
+    let fetched: { text: string; sha256: string; byteSize: number };
+    let ublockSource: CategoryMetadata['source'];
+    if (category.format === 'ublock') {
+      if (!category.pin) throw new Error(`${id}: uBlock-format list needs a pin`);
+      const src = await fetchUblockSource({ url, extra_urls: category.extra_urls, pin: category.pin }, ublockEnv);
+      fetched = src;
+      ublockSource = {
+        repo: category.pin.repo,
+        commit: src.commit,
+        urls: src.urls,
+        fetched_at: src.fetchedAt,
+        preprocessor_env: [...ublockEnv].filter(([, on]) => on).map(([token]) => token),
+      };
+      console.log(`  uAssets ${src.commit ?? '(commit unresolved — live Pages)'}, ${src.urls.length} file(s)`);
+    } else {
+      fetched = await fetchSource(url);
+    }
     console.log(
       `  fetched ${fetched.byteSize.toLocaleString()} bytes ` +
       `(sha256 ${fetched.sha256.slice(0, 12)}…) in ${Math.round(performance.now() - t0)}ms`,
     );
+    scriptletInputs.push({ id, text: fetched.text, trusted: category.trusted_scriptlets === true });
 
     const t1 = performance.now();
     const { mainRules, tailRules, listMeta, inputRuleCount } = convert(fetched.text);
@@ -95,18 +138,31 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
     // ── Desktop artifact: the raw ABP list text, compiled by the browser
     //    engine. The uploaded blob (and its sha256) IS this exact text, so the
     //    manifest entry reuses fetched.sha256 / byteSize.
-    await writeFile(join(desktopDir, `${id}.txt`), fetched.text, 'utf8');
-    desktopLists.push({
-      category: desktop_category,
-      list_id: id,
-      title: listMeta.title,
-      source_url: url,
-      license,
-      ref: '',
-      sha256: fetched.sha256,
-      bytes: fetched.byteSize,
-      rule_count: inputRuleCount,
-    });
+    if (platforms.includes('desktop')) {
+      if (!desktop_category) throw new Error(`${id}: desktop lists need a desktop_category`);
+      await writeFile(join(desktopDir, `${id}.txt`), fetched.text, 'utf8');
+      desktopLists.push({
+        category: desktop_category,
+        list_id: id,
+        title: listMeta.title,
+        source_url: url,
+        license,
+        ref: '',
+        sha256: fetched.sha256,
+        bytes: fetched.byteSize,
+        rule_count: inputRuleCount,
+      });
+      console.log(`  desktop: ${id}.txt — ${fetched.byteSize.toLocaleString()} bytes`);
+    }
+    if (!platforms.includes('ios')) {
+      categoriesMeta.push({
+        id, platforms, source_url: url, source_sha256: fetched.sha256, source_byte_size: fetched.byteSize,
+        ...(ublockSource ? { source: ublockSource } : {}),
+        list_title: listMeta.title, list_homepage: listMeta.homepage, list_expires: listMeta.expires,
+        input_rule_count: inputRuleCount, output_rule_count: totalRules, shards: [],
+      });
+      continue;
+    }
 
     // ── iOS artifact: WebKit-JSON shards. Hash the exact on-disk bytes
     //    (shard JSON + trailing newline) so the manifest sha256 == the file ==
@@ -140,7 +196,6 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
     });
 
     const totalBytes = shards.reduce((s, sh) => s + sh.byteSize, 0);
-    console.log(`  desktop: ${id}.txt — ${fetched.byteSize.toLocaleString()} bytes`);
     console.log(`  ios: wrote ${shards.length} shard(s), ${totalBytes.toLocaleString()} bytes total`);
     for (const { shard, filename } of shardMeta) {
       console.log(`    ${filename} — ${shard.rules.length.toLocaleString()} rules, ${shard.byteSize.toLocaleString()} bytes`);
@@ -148,9 +203,11 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
 
     categoriesMeta.push({
       id,
+      platforms,
       source_url: url,
       source_sha256: fetched.sha256,
       source_byte_size: fetched.byteSize,
+      ...(ublockSource ? { source: ublockSource } : {}),
       list_title: listMeta.title,
       list_homepage: listMeta.homepage,
       list_expires: listMeta.expires,
@@ -164,11 +221,61 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
     });
   }
 
+  // ── iOS scriptlet artifacts: resources.json passed through byte-identical
+  //    to desktop's pin, and scriptlets.json, every `+js(...)` rule of every
+  //    list parsed against it (src/scriptlets.ts).
+  const resourcesCfg = sources.resources;
+  console.log(`\n→ scriptlets`);
+  const resources = await fetchResources(resourcesCfg);
+  await writeFile(join(outDir, resourcesCfg.filename), resources.bytes);
+  console.log(
+    `  resources: ${resourcesCfg.filename} ${resourcesCfg.tag} — ` +
+    `${resources.bytes.byteLength.toLocaleString()} bytes, ${resources.scriptletCount} scriptlets`,
+  );
+
+  const index = indexResources(resources.json);
+  const dropped = emptyDropCounts();
+  const rules: ScriptletRule[] = [];
+  const perList: Record<string, number> = {};
+  for (const { id, text, trusted } of scriptletInputs) {
+    const listRules = extractScriptletRules(id, text, index, { trusted }, dropped);
+    perList[id] = listRules.length;
+    rules.push(...listRules);
+  }
+  const scriptletsFile = 'scriptlets.json';
+  const scriptletsBytes = serializeScriptletsDoc({
+    format: SCRIPTLETS_FORMAT,
+    resources: { tag: resourcesCfg.tag, sha256: resourcesCfg.sha256 },
+    sources: scriptletInputs.map(({ id }) => ({ list_id: id, rule_count: perList[id]! })),
+    rule_count: rules.length,
+    dropped,
+    rules,
+  });
+  await writeFile(join(outDir, scriptletsFile), scriptletsBytes, 'utf8');
+  console.log(
+    `  ${scriptletsFile} — ${rules.length.toLocaleString()} rules, ` +
+    `${Buffer.byteLength(scriptletsBytes).toLocaleString()} bytes ` +
+    `(${Object.entries(perList).map(([k, v]) => `${k} ${v}`).join(', ')})`,
+  );
+  console.log(`  dropped: ${Object.entries(dropped).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+
   const meta: BuildMetadata = {
     version: today,
     generated_at: generatedAt,
     lib_version: `adblock-rs@${adblockRsPkg.version}`,
     categories: categoriesMeta,
+    scriptlets: { filename: scriptletsFile, format: SCRIPTLETS_FORMAT, rule_count: rules.length, per_list: perList, dropped },
+    resources: {
+      filename: resourcesCfg.filename,
+      title: resourcesCfg.title,
+      tag: resourcesCfg.tag,
+      source_url: resourcesCfg.source_url,
+      sha256: resourcesCfg.sha256,
+      license: resourcesCfg.license,
+      bytes: resources.bytes.byteLength,
+      scriptlet_count: resources.scriptletCount,
+      upstream: resourcesCfg.upstream,
+    },
   };
   await writeMetadata(outDir, meta);
 
@@ -183,7 +290,26 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
     engines: { adblock_rs: adblockRsPkg.version },
     platforms: {
       desktop: { lists: desktopLists },
-      ios: { lists: iosLists },
+      ios: {
+        lists: iosLists,
+        scriptlets: {
+          filename: scriptletsFile,
+          ref: '',
+          sha256: sha256Hex(scriptletsBytes),
+          bytes: Buffer.byteLength(scriptletsBytes),
+          rule_count: rules.length,
+          format: SCRIPTLETS_FORMAT,
+        },
+        resources: {
+          filename: resourcesCfg.filename,
+          ref: '',
+          sha256: resourcesCfg.sha256,
+          bytes: resources.bytes.byteLength,
+          source_url: resourcesCfg.source_url,
+          tag: resourcesCfg.tag,
+          license: resourcesCfg.license,
+        },
+      },
     },
   };
   await writeFeedManifest(join(outDir, 'feed-manifest.json'), manifest);

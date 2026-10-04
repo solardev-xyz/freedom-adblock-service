@@ -230,3 +230,73 @@ test('minVersion refuses to restart the feed when the lookup finds nothing', asy
   assert.equal(fake.latest, null, 'nothing written');
   await rm(outDir, { recursive: true, force: true });
 });
+
+// The fixture plus the optional iOS scriptlet artifacts.
+async function fixtureWithScriptlets(ruleCount = 5000) {
+  const { outDir, manifest } = await fixture();
+  const scriptletsText = '{"format":1,"rules":[]}\n';
+  const resourcesText = '{"scriptlets":[],"redirects":[]}' + ' '.repeat(2000);
+  await writeFile(join(outDir, 'scriptlets.json'), scriptletsText, 'utf8');
+  await writeFile(join(outDir, 'resources.json'), resourcesText, 'utf8');
+  manifest.platforms.ios.scriptlets = {
+    filename: 'scriptlets.json', ref: '', sha256: sha256Hex(scriptletsText),
+    bytes: Buffer.byteLength(scriptletsText), rule_count: ruleCount, format: 1,
+  };
+  manifest.platforms.ios.resources = {
+    filename: 'resources.json', ref: '', sha256: sha256Hex(resourcesText),
+    bytes: Buffer.byteLength(resourcesText), source_url: 'https://example.test/resources.json',
+    tag: 'v2.18.2', license: 'GPL-3.0-only',
+  };
+  return { outDir, manifest };
+}
+
+test('publish uploads scriptlets.json + resources.json and fills their refs', async () => {
+  const { outDir, manifest } = await fixtureWithScriptlets();
+  const fake = fakeClient(null);
+  const { manifest: published } = await publish(manifest, outDir, fake.client, SIGNER, NO_GUARD);
+
+  assert.equal(fake.uploads.length, 4, 'two lists + scriptlets + resources');
+  assert.ok(published.platforms.ios.scriptlets?.ref.startsWith('ref-'));
+  assert.ok(published.platforms.ios.resources?.ref.startsWith('ref-'));
+  assert.equal(published.platforms.ios.resources?.tag, 'v2.18.2', 'other fields pass through');
+  assert.equal(verifyMessage(canonicalManifestForSigning(published), published.sig!), SIGNER_ADDRESS);
+
+  // Unchanged next cycle: refs reused, no feed write.
+  const again = await publish(manifest, outDir, fakeClient(published).client, SIGNER, NO_GUARD);
+  assert.equal(again.changed, false);
+  assert.equal(again.reused, 4);
+  await rm(outDir, { recursive: true, force: true });
+});
+
+test('publish still works for a manifest without the optional scriptlet artifacts', async () => {
+  const { outDir, manifest } = await fixture();
+  const { manifest: published } = await publish(manifest, outDir, fakeClient(null).client, SIGNER, NO_GUARD);
+  assert.equal('scriptlets' in published.platforms.ios, false);
+  assert.equal('resources' in published.platforms.ios, false);
+  await rm(outDir, { recursive: true, force: true });
+});
+
+test('guard rejects a scriptlet index below its rule floor', async () => {
+  const { outDir, manifest } = await fixtureWithScriptlets(12);
+  await assert.rejects(
+    () => publish(manifest, outDir, fakeClient(null).client, SIGNER, {
+      guard: { minBytes: 1, minRuleCount: 1, maxShrinkRatio: 0.5, minScriptletRules: 1000 },
+    }),
+    /ios:scriptlets has 12 rules/,
+  );
+  await rm(outDir, { recursive: true, force: true });
+});
+
+test('guard rejects a scriptlet index that shrank sharply versus the live feed', async () => {
+  const { outDir, manifest } = await fixtureWithScriptlets();
+  const previous: FeedManifest = JSON.parse(JSON.stringify(manifest));
+  previous.version = 9;
+  previous.platforms.ios.scriptlets!.bytes = 1_000_000;
+  await assert.rejects(
+    () => publish(manifest, outDir, fakeClient(previous).client, SIGNER, {
+      guard: { minBytes: 1, minRuleCount: 1, maxShrinkRatio: 0.5, minScriptletRules: 1 },
+    }),
+    /ios:scriptlets shrank/,
+  );
+  await rm(outDir, { recursive: true, force: true });
+});

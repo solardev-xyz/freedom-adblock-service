@@ -39,7 +39,7 @@ export const FEED_TOPIC = 'freedom/adblock/lists/v1';
 /** A desktop filter list: raw ABP text, compiled by the browser's engine. */
 export interface DesktopListEntry {
   category: string; // browser category key: ads | privacy | cookies | annoyances
-  list_id: string; // source list id: easylist | easyprivacy | easylist-cookies | easylist-annoyances
+  list_id: string; // source list id: easylist | easyprivacy | easylist-cookies | easylist-annoyances (ublock is iOS-only)
   title: string | null;
   source_url: string;
   license: string;
@@ -63,6 +63,33 @@ export interface IosListEntry {
   shards: IosShardEntry[];
 }
 
+/**
+ * scriptlets.json — every `+js(...)` rule of every list, pre-parsed for the
+ * iOS injector (shape: src/scriptlets.ts). Optional: older readers ignore it.
+ */
+export interface IosScriptletsEntry {
+  filename: string;
+  ref: string;
+  sha256: string;
+  bytes: number;
+  rule_count: number;
+  format: number; // SCRIPTLETS_FORMAT
+}
+
+/**
+ * resources.json — the scriptlet/redirect bodies those rules name, byte-
+ * identical to desktop's pinned copy (GPL-3.0-only). Optional, like scriptlets.
+ */
+export interface IosResourcesEntry {
+  filename: string;
+  ref: string;
+  sha256: string;
+  bytes: number;
+  source_url: string;
+  tag: string;
+  license: string;
+}
+
 export interface FeedManifest {
   schema: number; // MANIFEST_SCHEMA
   version: number; // monotonic; clients reject <= their applied version
@@ -70,7 +97,11 @@ export interface FeedManifest {
   engines: Record<string, string>; // provenance, e.g. { adblock_rs: "0.12.3" }
   platforms: {
     desktop: { lists: DesktopListEntry[] };
-    ios: { lists: IosListEntry[] };
+    ios: {
+      lists: IosListEntry[];
+      scriptlets?: IosScriptletsEntry;
+      resources?: IosResourcesEntry;
+    };
   };
   sig?: string; // 0x… secp256k1 over canonicalManifestForSigning(this)
 }
