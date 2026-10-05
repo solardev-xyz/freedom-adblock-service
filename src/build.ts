@@ -6,6 +6,13 @@ import { sha256Hex } from './hash.ts';
 import { fetchSource } from './fetch.ts';
 import { convert } from './convert.ts';
 import { shardRules } from './shard.ts';
+import {
+  collectPageHideExceptions,
+  genericHideIgnoreRules,
+  isGenericHide,
+  mergePageHideExceptions,
+  type PageHideStats,
+} from './page-hide-exceptions.ts';
 import { writeMetadata, type CategoryMetadata, type BuildMetadata } from './metadata.ts';
 import { fetchUblockSource, type UblockPin } from './ublock.ts';
 import { fetchResources, type ResourcesConfig } from './resources.ts';
@@ -96,8 +103,16 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
   const scriptletInputs: Array<{ id: string; text: string; trusted: boolean }> = [];
   const ublockEnv = new Map(Object.entries(sources.ublock_env));
 
+  // Phase 1 — fetch every list. Page-level hide exceptions ($generichide …)
+  // are unioned across lists (page-hide-exceptions.ts), so every text is
+  // needed before any list is converted.
+  const fetchedLists: Array<{
+    category: SourcesFile['categories'][number];
+    fetched: { text: string; sha256: string; byteSize: number };
+    ublockSource: CategoryMetadata['source'];
+  }> = [];
   for (const category of sources.categories) {
-    const { id, url, desktop_category, license, platforms } = category;
+    const { id, url } = category;
     console.log(`\n→ ${id}`);
     console.log(`  source: ${url}${category.extra_urls ? ` (+${category.extra_urls.length})` : ''}`);
 
@@ -123,10 +138,32 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
       `  fetched ${fetched.byteSize.toLocaleString()} bytes ` +
       `(sha256 ${fetched.sha256.slice(0, 12)}…) in ${Math.round(performance.now() - t0)}ms`,
     );
+    fetchedLists.push({ category, fetched, ublockSource });
+  }
+
+  const pageHide = new Map<string, PageHideStats>();
+  const pageHideAll = fetchedLists.map(({ category, fetched }) => {
+    const { exceptions, stats } = collectPageHideExceptions(fetched.text);
+    pageHide.set(category.id, stats);
+    return exceptions;
+  });
+  const pageHideUnion = mergePageHideExceptions(pageHideAll);
+  const genericIgnore = genericHideIgnoreRules(pageHideUnion.generic);
+  console.log(
+    `\n→ page-level hide exceptions, all lists: ${pageHideUnion.generic.length} generichide site(s) ` +
+    `(${genericIgnore.length} ignore rule(s) per generic shard), ${pageHideUnion.specific.length} specifichide site(s)`,
+  );
+
+  // Phase 2 — convert, shard and write each list.
+  for (const { category, fetched, ublockSource } of fetchedLists) {
+    const { id, url, desktop_category, license, platforms } = category;
+    console.log(`\n→ ${id} (convert)`);
     scriptletInputs.push({ id, text: fetched.text, trusted: category.trusted_scriptlets === true });
 
     const t1 = performance.now();
-    const { mainRules, tailRules, listMeta, inputRuleCount, exceptionStats } = convert(fetched.text);
+    const { mainRules, tailRules, listMeta, inputRuleCount, exceptionStats } = convert(fetched.text, {
+      specificHideSites: pageHideUnion.specific,
+    });
     const totalRules = mainRules.length + tailRules.length;
     console.log(
       `  converted ${inputRuleCount.toLocaleString()} input lines → ` +
@@ -139,7 +176,8 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
       `excepted, ${exceptionStats.domain_rules_narrowed} narrowed, ${exceptionStats.rules_dropped} dropped, ` +
       `${exceptionStats.unmatched} unmatched, ${exceptionStats.unexpressible} unexpressible; ` +
       `${exceptionStats.entity_hides_dropped} entity+negation hide(s) dropped; ` +
-      `${exceptionStats.domains_prefixed} domain(s) given *, ${exceptionStats.domains_kept_exact} kept exact`,
+      `${exceptionStats.domains_prefixed} domain(s) given *, ${exceptionStats.domains_kept_exact} kept exact; ` +
+      `specifichide: ${exceptionStats.page_specific_narrowed} narrowed, ${exceptionStats.page_specific_dropped} dropped`,
     );
 
     // ── Desktop artifact: the raw ABP list text, compiled by the browser
@@ -166,7 +204,8 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
         id, platforms, source_url: url, source_sha256: fetched.sha256, source_byte_size: fetched.byteSize,
         ...(ublockSource ? { source: ublockSource } : {}),
         list_title: listMeta.title, list_homepage: listMeta.homepage, list_expires: listMeta.expires,
-        input_rule_count: inputRuleCount, output_rule_count: totalRules, cosmetic_exceptions: exceptionStats, shards: [],
+        input_rule_count: inputRuleCount, output_rule_count: totalRules, cosmetic_exceptions: exceptionStats,
+        page_hide_exceptions: pageHide.get(id)!, shards: [],
       });
       continue;
     }
@@ -174,16 +213,27 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
     // ── iOS artifact: WebKit-JSON shards. Hash the exact on-disk bytes
     //    (shard JSON + trailing newline) so the manifest sha256 == the file ==
     //    the blob the publisher uploads == what the client downloads and writes.
-    const shards = shardRules(mainRules, tailRules);
-    const shardMeta = shards.map((shard, i) => {
-      const fileBytes = shard.json + '\n';
-      return {
-        shard,
-        filename: shards.length === 1 ? `${id}.json` : `${id}-${i + 1}.json`,
-        fileBytes,
-        sha256: sha256Hex(fileBytes),
-      };
-    });
+    //    Generic hides go in their own shard(s) (`<id>-generic…`), ending with
+    //    ignore-previous-rules on the $generichide sites; ignore-previous-rules
+    //    is per WKContentRuleList, so it cancels only those generic hides.
+    const regular = mainRules.filter((r) => !isGenericHide(r));
+    const generic = mainRules.filter(isGenericHide);
+    const groups = [
+      { stem: id, shards: regular.length > 0 ? shardRules(regular, tailRules) : [] },
+      { stem: `${id}-generic`, shards: generic.length > 0 ? shardRules(generic, [...genericIgnore, ...tailRules]) : [] },
+    ];
+    const shardMeta = groups.flatMap(({ stem, shards: group }) =>
+      group.map((shard, i) => {
+        const fileBytes = shard.json + '\n';
+        return {
+          shard,
+          filename: group.length === 1 ? `${stem}.json` : `${stem}-${i + 1}.json`,
+          fileBytes,
+          sha256: sha256Hex(fileBytes),
+        };
+      }),
+    );
+    const shards = shardMeta.map(({ shard }) => shard);
 
     for (const { filename, fileBytes } of shardMeta) {
       await writeFile(join(outDir, filename), fileBytes, 'utf8');
@@ -221,6 +271,7 @@ export async function buildArtifacts(options: BuildOptions = {}): Promise<BuildR
       input_rule_count: inputRuleCount,
       output_rule_count: totalRules,
       cosmetic_exceptions: exceptionStats,
+      page_hide_exceptions: pageHide.get(id)!,
       shards: shardMeta.map(({ shard, filename }) => ({
         filename,
         rule_count: shard.rules.length,

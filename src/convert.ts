@@ -20,7 +20,12 @@ export interface ConvertResult {
   exceptionStats: CosmeticExceptionStats;
 }
 
-export function convert(text: string): ConvertResult {
+export interface ConvertOptions {
+  /** `$specifichide` / `$elemhide` sites from all lists (page-hide-exceptions.ts). */
+  specificHideSites?: string[];
+}
+
+export function convert(text: string, options: ConvertOptions = {}): ConvertResult {
   const lines = text.split(/\r?\n/);
   // For metadata only — adblock-rs handles comments itself. Counts non-blank,
   // non-comment, non-section-header lines as the source's "rule count".
@@ -45,7 +50,12 @@ export function convert(text: string): ConvertResult {
   while (converted.length > 0 && isCatchAllSafetyRule(converted[converted.length - 1]!)) {
     tailRules.unshift(converted.pop()!);
   }
-  const { rules: mainRules, stats: exceptionStats } = applyCosmeticExceptions(converted, exceptions, entityHidesDropped);
+  const { rules: mainRules, stats: exceptionStats } = applyCosmeticExceptions(
+    converted,
+    exceptions,
+    entityHidesDropped,
+    options.specificHideSites,
+  );
   for (const rule of [...mainRules, ...tailRules]) canonicalizeTrigger(rule);
 
   return { mainRules, tailRules, listMeta, inputRuleCount, exceptionStats };

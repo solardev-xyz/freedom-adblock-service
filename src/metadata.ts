@@ -28,6 +28,8 @@ export interface CategoryMetadata {
   output_rule_count: number;
   /** iOS conversion: how the list's `#@#` exceptions were applied. */
   cosmetic_exceptions: import('./cosmetic-exceptions.ts').CosmeticExceptionStats;
+  /** This list's own $generichide/$elemhide/$specifichide/$document sites (applied as a union). */
+  page_hide_exceptions: import('./page-hide-exceptions.ts').PageHideStats;
   shards: ShardMetadata[];
 }
 

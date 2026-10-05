@@ -68,6 +68,10 @@ export interface CosmeticExceptionStats {
   domains_prefixed: number;
   /** Bare if-domain entries kept exact because a subdomain of them is excepted. */
   domains_kept_exact: number;
+  /** Domain hides that lost if-domain entries to `$specifichide`/`$elemhide` sites. */
+  page_specific_narrowed: number;
+  /** Domain hides dropped because every if-domain entry was such a site. */
+  page_specific_dropped: number;
 }
 
 // hostnames, `#@`, optional procedural/style marker, `#`, body.
@@ -126,6 +130,8 @@ export function applyCosmeticExceptions(
   rules: ContentBlockingRule[],
   exceptions: CosmeticException[],
   entityHidesDropped = 0,
+  /** `$specifichide` / `$elemhide` sites (page-hide-exceptions.ts), all lists. */
+  specificHideSites: string[] = [],
 ): { rules: ContentBlockingRule[]; stats: CosmeticExceptionStats } {
   const stats: CosmeticExceptionStats = {
     entity_hides_dropped: entityHidesDropped,
@@ -137,6 +143,8 @@ export function applyCosmeticExceptions(
     unexpressible: 0,
     domains_prefixed: 0,
     domains_kept_exact: 0,
+    page_specific_narrowed: 0,
+    page_specific_dropped: 0,
   };
   const bySelector = new Map<string, ContentBlockingRule[]>();
   for (const rule of rules) {
@@ -191,6 +199,34 @@ export function applyCosmeticExceptions(
     }
   }
 
+  // `$specifichide` / `$elemhide`: a site (and its subdomains) gets no domain
+  // hides. An entry the site covers is removed; an entry the site sits under
+  // (`*a.com` vs `sub.a.com`) can't be carved out, so it stays exact.
+  if (specificHideSites.length > 0) {
+    const covers = (site: string, host: string) => host === site || host.endsWith(`.${site}`);
+    for (const rule of rules) {
+      const ifDomain = rule.trigger['if-domain'];
+      if (!isHide(rule) || dropped.has(rule) || ifDomain === undefined) continue;
+      const remaining = ifDomain.filter((d) => !specificHideSites.some((s) => covers(s, d.replace(/^\*/, ''))));
+      for (const d of remaining) {
+        const base = d.replace(/^\*/, '');
+        if (specificHideSites.some((s) => s.endsWith(`.${base}`))) {
+          const set = keepExact.get(rule) ?? new Set<string>();
+          set.add(d);
+          keepExact.set(rule, set);
+        }
+      }
+      if (remaining.length === ifDomain.length) continue;
+      if (remaining.length === 0) {
+        dropped.add(rule);
+        stats.page_specific_dropped++;
+      } else {
+        rule.trigger['if-domain'] = remaining;
+        stats.page_specific_narrowed++;
+      }
+    }
+  }
+
   const kept = rules.filter((r) => !dropped.has(r));
   const prefix = (entries: string[], exact?: Set<string>) => {
     const out = new Set<string>();
@@ -213,7 +249,7 @@ export function applyCosmeticExceptions(
     if (t['unless-domain']) t['unless-domain'] = prefix(t['unless-domain']);
   }
 
-  stats.rules_dropped = dropped.size;
+  stats.rules_dropped = dropped.size - stats.page_specific_dropped;
   stats.generic_rules_excepted = [...excepted].filter((r) => !dropped.has(r)).length;
   stats.domain_rules_narrowed = [...narrowed].filter((r) => !dropped.has(r)).length;
   return { rules: kept, stats };
