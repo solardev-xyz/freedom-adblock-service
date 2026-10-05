@@ -26,6 +26,8 @@ export interface ServeConfig {
   signerKey: string;
   /** Delay between cycles. */
   intervalMs: number;
+  /** Delay after a FAILED cycle (node down, request timeout, guard trip). Defaults to intervalMs. */
+  retryIntervalMs?: number;
   /** Warn when the postage batch drops below this many seconds of TTL. */
   batchTtlFloorSec: number;
   /** Lowest version to write; also refuses an empty feed lookup (PublishOptions.minVersion). */
@@ -154,13 +156,17 @@ export async function runServeLoop(
   );
 
   while (!signal?.aborted) {
+    let delayMs = config.intervalMs;
     try {
       await runPublishCycle(config, io);
     } catch (err) {
-      log.error(`[serve] cycle failed, will retry next tick: ${(err as Error).message}`);
+      delayMs = Math.min(config.retryIntervalMs ?? config.intervalMs, config.intervalMs);
+      log.error(
+        `[serve] cycle failed, retrying in ${Math.round(delayMs / 60_000)} min: ${(err as Error).message}`,
+      );
     }
     try {
-      await sleep(config.intervalMs, signal);
+      await sleep(delayMs, signal);
     } catch {
       break; // sleep rejected because the signal aborted
     }

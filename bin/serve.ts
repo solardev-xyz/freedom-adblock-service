@@ -13,9 +13,11 @@ import { abortableSleep } from '../src/sleep.ts';
 // (see src/swarm-env.ts), plus:
 //   BUILD_INTERVAL_HOURS  cycle cadence, default 24
 //   BATCH_TTL_FLOOR_DAYS  warn below this TTL, default 30
+//   RETRY_INTERVAL_MINUTES  delay after a failed cycle, default 30
 
 const env = readSwarmEnv();
 const intervalMs = (Number(process.env.BUILD_INTERVAL_HOURS) || 24) * 60 * 60 * 1000;
+const retryIntervalMs = (Number(process.env.RETRY_INTERVAL_MINUTES) || 30) * 60 * 1000;
 const batchTtlFloorSec = (Number(process.env.BATCH_TTL_FLOOR_DAYS) || 30) * 24 * 60 * 60;
 
 printSwarmBanner(env);
@@ -57,7 +59,7 @@ if (!client) {
 }
 
 await runServeLoop(
-  { signerKey: env.signerKey, intervalMs, batchTtlFloorSec, minVersion: env.minVersion },
+  { signerKey: env.signerKey, intervalMs, retryIntervalMs, batchTtlFloorSec, minVersion: env.minVersion },
   { build: () => buildArtifacts(), client },
   controller.signal,
 );

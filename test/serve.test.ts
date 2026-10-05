@@ -155,3 +155,22 @@ test('runServeLoop stops immediately if already aborted', async () => {
   await runServeLoop(CONFIG, io, controller.signal);
   assert.equal(built, false, 'no cycle ran');
 });
+
+test('runServeLoop retries a failed cycle after retryIntervalMs, then resumes the normal interval', async () => {
+  const { log } = collectingLogger();
+  const controller = new AbortController();
+  const sleeps: number[] = [];
+  let cycles = 0;
+  const io: ServeIO = {
+    ...fakeIO({ log }),
+    build: async (): Promise<BuildResult> => {
+      cycles += 1;
+      if (cycles === 1) throw new Error('bee request timed out');
+      if (cycles >= 2) controller.abort();
+      return { manifest: fakeManifest(2), outDir: '/tmp/x' };
+    },
+    sleep: async (ms) => { sleeps.push(ms); },
+  };
+  await runServeLoop({ ...CONFIG, intervalMs: 86_400_000, retryIntervalMs: 1_800_000 }, io, controller.signal);
+  assert.deepEqual(sleeps, [1_800_000, 86_400_000], 'short retry after the failure, full interval after success');
+});

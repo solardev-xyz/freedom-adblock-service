@@ -20,6 +20,16 @@ function toHex(value: unknown): string {
   return String(value);
 }
 
+/**
+ * Per-request timeout for every bee API call. bee-js has none by default, so
+ * one request bee never answers blocked the daemon for good: on 2026-10-04 a
+ * non-deferred feed write waited on a node whose push-sync had stalled, and
+ * the next 24h tick never came. Generous — a local upload takes well under a
+ * second and a feed write a few seconds — but finite, so the cycle fails and
+ * retries.
+ */
+export const BEE_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+
 export interface SwarmConfig {
   beeUrl: string;
   signerKey: string; // feed-write key (also the SOC owner / feed owner)
@@ -42,7 +52,7 @@ async function selectBatch(bee: Bee): Promise<string | null> {
 }
 
 export async function createSwarmClient(cfg: SwarmConfig): Promise<SwarmClient> {
-  const bee = new Bee(cfg.beeUrl);
+  const bee = new Bee(cfg.beeUrl, { timeout: BEE_REQUEST_TIMEOUT_MS });
   const signer = new PrivateKey(cfg.signerKey);
   const owner = signer.publicKey().address();
   const topic = Topic.fromString(FEED_TOPIC);
